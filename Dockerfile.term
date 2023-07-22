@@ -1,0 +1,83 @@
+FROM ubuntu:22.04 AS builder
+
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+ENV PATH /opt/conda/bin:$PATH
+
+# 
+RUN set -x && \
+    apt-get update --fix-missing && \
+    apt-get install -y --no-install-recommends \
+        bzip2 \
+        ca-certificates \
+        curl \
+        git \
+        gnupg \
+        libglib2.0-0 \
+        libsm6 \
+        libxcomposite1 \
+        libxcursor1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxi6 \
+        libxinerama1 \
+        libxrandr2 \
+        libxrender1 \
+        mercurial \
+        openssh-client \
+        procps \
+        subversion \
+        sudo \
+        vim \
+        wget 
+RUN UNAME_M="$(uname -m)" && \
+    if [ "${UNAME_M}" = "x86_64" ]; then \
+        ANACONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"; \
+        SHA256SUM="634d76df5e489c44ade4085552b97bebc786d49245ed1a830022b0b406de5817"; \
+    elif [ "${UNAME_M}" = "s390x" ]; then \
+        ANACONDA_URL="https://repo.anaconda.com/archive/Anaconda3-2021.11-Linux-s390x.sh"; \
+        SHA256SUM="1504e9259816c5804eff1304fe7e339517b9fc1a08bfd991bc525a7efb6568f1"; \
+    elif [ "${UNAME_M}" = "aarch64" ]; then \
+        ANACONDA_URL="https://repo.anaconda.com/archive/Anaconda3-2021.11-Linux-aarch64.sh"; \
+        SHA256SUM="4daacb88fbd3a6c14e28cd3b37004ed4c2643e2b187302e927eb81a074e837bc"; \
+    elif [ "${UNAME_M}" = "ppc64le" ]; then \
+        ANACONDA_URL="https://repo.anaconda.com/archive/Anaconda3-2021.11-Linux-ppc64le.sh"; \
+        SHA256SUM="7eb6a95925ee756240818599f8dcbba7a155adfb05ef6cd5336aa3c083de65f3"; \
+    fi && \
+    wget "${ANACONDA_URL}" -O anaconda.sh -q  && \
+    echo "${SHA256SUM} anaconda.sh" > shasum  && \
+    sha256sum --check --status shasum 
+RUN /bin/bash anaconda.sh -b -p /opt/conda && \
+    rm anaconda.sh shasum && \
+    ln -s /opt/conda/etc/profile.d/conda.sh /etc/profile.d/conda.sh && \
+    echo ". /opt/conda/etc/profile.d/conda.sh" >> ~/.bashrc && \
+    echo "conda activate base" >> ~/.bashrc && \
+    find /opt/conda/ -follow -type f -name '*.a' -delete && \
+    find /opt/conda/ -follow -type f -name '*.js.map' -delete && \
+    /opt/conda/bin/conda clean -afy
+RUN useradd -ms /bin/bash tf-docker
+RUN echo "root:user" |chpasswd
+RUN echo "tf-docker:user" |chpasswd && adduser tf-docker sudo
+RUN wget https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64/cuda-wsl-ubuntu.pin
+RUN mv cuda-wsl-ubuntu.pin /etc/apt/preferences.d/cuda-repository-pin-600
+RUN  wget https://developer.download.nvidia.com/compute/redist/cudnn/v8.8.0/local_installers/11.8/cudnn-local-repo-ubuntu2204-8.8.0.121_1.0-1_amd64.deb
+RUN dpkg -i ./cudnn-local-repo-ubuntu2204-8.8.0.121_1.0-1_amd64.deb && cp /var/cudnn-local-repo-ubuntu2204-8.8.0.121/cudnn-local-*-keyring.gpg /usr/share/keyrings/ && dpkg -i /var/cudnn-local-repo-ubuntu2204-8.8.0.121/libcudnn8_8.8.0.121-1+cuda11.8_amd64.deb
+RUN rm -f ./cudnn-local-repo-ubuntu2204-8.8.0.121_1.0-1_amd64.deb
+RUN wget https://developer.download.nvidia.com/compute/cuda/11.8.0/local_installers/cuda-repo-wsl-ubuntu-11-8-local_11.8.0-1_amd64.deb
+RUN dpkg -i cuda-repo-wsl-ubuntu-11-8-local_11.8.0-1_amd64.deb && cp /var/cuda-repo-wsl-ubuntu-11-8-local/cuda-*-keyring.gpg /usr/share/keyrings/
+RUN rm -f ./cuda-repo-wsl-ubuntu-11-8-local_11.8.0-1_amd64.deb
+RUN apt-get update && apt-get install cuda nodejs npm -y
+
+FROM builder AS build
+RUN pip install --upgrade pip
+COPY tensorflow-2.12.1-cp311-cp311-linux_x86_64.whl .
+COPY tools.yml .
+RUN conda env create -f ./tools.yml -n env
+USER tf-docker
+RUN echo "alias lpack='comm -23 <(apt-mark showmanual | sort -u) <(gzip -dc /var/log/installer/initial-status.gz | sed -n '\''s/^Package: //p'\'' | sort -u)'" >> ~/.bashrc
+RUN echo "source activate env" >> ~/.bashrc
+WORKDIR /home/tf-docker/jup_notebook
+ENV PATH ".:$PATH:/home/tf-docker/.local/bin:/opt/conda/envs/env/bin:/usr/local/cuda/bin"
+ENV LD_LIBRARY_PATH "/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+ENV TMP "/tmp"
+CMD [ "/bin/bash" ]
